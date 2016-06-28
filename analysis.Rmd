@@ -1,0 +1,225 @@
+---
+title: "Data Science Capstone Project: Milestone Report"
+author: "George Kolev"
+date: "June 12, 2016"
+output: html_document
+---
+
+## Purpose
+
+This report is part of the Coursera Data Science Certificate Capstone Project.  The ultimate goal of the project is to build a Shiny app that takes any phrase as an input and uses a predictive text model to predict the next word - similar to the keyboard app [SwiftKey](https://swiftkey.com/).
+
+This intermediary report describes in plain language, plots, and code my exploratory analysis of the data set.
+
+## Data Import and Summary Statistics
+
+The data come from a corpus called HC Corpora and are comprised of text collected from publicly available sources by a web crawler.  For this project we will use the three English language files, which have been downloaded and saved in the working directory.
+
+```{r, warning=FALSE}
+list.files(pattern = "^en_US.*txt$")
+```
+
+We use the `readLines` function to import the text files as character vectors.
+
+```{r, warning=FALSE}
+blogs <- readLines("en_US.blogs.txt", encoding = "UTF-8", skipNul = TRUE)
+news <- readLines("en_US.news.txt", encoding = "UTF-8", skipNul = TRUE)
+twitter <- readLines("en_US.twitter.txt", encoding = "UTF-8", skipNul = TRUE)
+```
+
+Let's take a look at a sample of the data contained in each file.
+
+```{r, warning=FALSE}
+head(blogs, n = 3)
+head(news, n = 3)
+head(twitter, n = 3)
+```
+
+We run some preliminary statistics on the imported text files:
+
+```{r, warning=FALSE, message=FALSE}
+## Size of each file
+size <- round(file.info(c("en_US.blogs.txt", 
+                          "en_US.news.txt", 
+                          "en_US.twitter.txt"))$size/1024/1024, 2)
+## Number of lines in each file
+lines <- c(length(blogs), 
+           length(news), 
+           length(twitter))
+## Number of characters in each file
+char <- c(sum(nchar(blogs)), 
+          sum(nchar(news)), 
+          sum(nchar(twitter)))
+## Number of words
+library(stringi)
+words <- c(sum(stri_count_words(blogs)), 
+           sum(stri_count_words(news)), 
+           sum(stri_count_words(twitter)))
+## Knit results into a data table
+library(knitr)
+stats <- cbind(size, lines, char, words)
+colnames(stats) <- c("File Size (MB)", "Lines", "Characters", "Words")
+rownames(stats) <- c("Blogs", "News", "Twitter")
+kable(stats)
+```
+
+The Twitter file contains almost three times as many lines as the Blogs file, but about 20% fewer characters.  This is likely due to the fact that tweets are limited to 140 characters.
+
+## Preprocessing
+
+We use the `quanteda` package to convert the three text files into a corpus, and count the number of types (unique words), tokens (actual words) and sentences.
+
+```{r, warning=FALSE, message=FALSE}
+library(quanteda)
+corpus <- corpus(textfile(c("en_US.blogs.txt", "en_US.news.txt", "en_US.twitter.txt")))
+sum_corpus <- summary(corpus, verbose = FALSE)
+kable(sum_corpus)
+```
+
+We create a document-feature matrix (aka document-term matrix), which describes the frequency of n-grams, or sequences of n words.  We use the `dfm` function, which tokenizes the stream of text into n-grams; converts the text to lowercase; and removes numbers, punctuation, and whitespaces.
+
+At this stage, it is not uncommon to remove stopwords - frequently used words with relatively low significance, such as "at" and "the" - but, since the purpose of this project is to create a predictive text model, we will keep them.  We filter for profane language, using a list of words that Shutterstock uses to filter results from their autocomplete server and recommendation engine (license documentation available [here](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/blob/master/LICENSE)).
+
+```{r, warning=FALSE, message=FALSE}
+## Create sample corpus equal to 10% of the full corpus
+blogs_sample <- blogs[sample(length(blogs), 0.1*length(blogs))]
+news_sample <- news[sample(length(news), 0.1*length(news))]
+twitter_sample <- twitter[sample(length(twitter), 0.1*length(twitter))]
+corpus_sample <- corpus(c(blogs_sample, news_sample, twitter_sample))
+## Create profanity filter file
+profanity <- readLines("profanity_list_en.txt", encoding = "UTF-8", skipNul = TRUE)
+## Create custom function that generates a DFM, taking a corpus and n, as in n-grams, as input
+mydfmFunction <- function(corpus, n) {
+        dfm(x = corpus,
+           ngrams = n,
+           toLower = TRUE, 
+           removeNumbers = TRUE, 
+           removePunct = TRUE, 
+           removeSeparators = TRUE, 
+           ignoredFeatures = profanity, 
+           stem = FALSE,
+           verbose = FALSE)
+}
+```
+
+## Exploratory Analysis
+
+Let's look at the top 20 n-grams by frequency.  We combine the plots using the `multiplot` function, [created by Winston Chang](http://www.cookbook-r.com/Graphs/Multiple_graphs_on_one_page_(ggplot2)/).
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+## Create multiplot function
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+  plots <- c(list(...), plotlist)
+  numPlots = length(plots)
+  if (is.null(layout)) {
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+ if (numPlots==1) {
+    print(plots[[1]])
+  } else {
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+    for (i in 1:numPlots) {
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(ggthemes)
+for (i in 1:4) {
+        ## Prepare data frame for plotting
+        plot.data <- as.data.frame(
+                topfeatures(
+                        mydfmFunction(corpus = corpus_sample, n = i), 20)
+                )
+        colnames(plot.data) <- "frequency"
+        plot.data$ngram <- row.names(plot.data)
+        ## Generate plots 
+        g <- ggplot(plot.data, aes(y = frequency, 
+                                   x = reorder(ngram, frequency)))
+        g <- g + geom_bar(stat = "identity") + coord_flip()
+        g <- g + ggtitle(paste(i, "-grams", sep = "")) 
+        g <- g + ylab("") + xlab("")
+        g <- g + theme_few()
+        assign(paste("p", i, sep = ""), g)
+}
+## Combine plots
+```
+
+```{r, warning=FALSE, message=FALSE}
+multiplot(p1, p2, p3, p4, cols=2)
+```
+
+Next, we'd like to see how many unique words account for 50% and 90% of all word instances in the sample data set.  We plot a frequency sorted list of unique words against the cumulative frequency, expressed as % of total words in the data set.  We limit the plot to 95% of features.
+
+```{r, warning=FALSE, message=FALSE, fig.width = 5, fig.height = 5}
+## Prepare data frame for plotting
+dfm <- mydfmFunction(corpus = corpus_sample, n = 1)
+data <- as.data.frame(topfeatures(dfm, n = length(features(dfm))))
+colnames(data) <- "freq"
+data$ngram <- row.names(data)
+row.names(data) <- c(1:nrow(data))
+data$rank <- c(1:nrow(data))  ## Word frequency by rank
+data$pct_total <- data$freq / sum(data$freq) * 100 ## Word frequency as percent of total
+data$pct_cumul <- cumsum(data$pct_total) ## Word frequency as cumulative % of total
+## Plot
+g <- ggplot(data = data[1:which.min(abs(data$pct_cumul-95)), ],
+                        aes(y = pct_cumul, x = rank))
+g <- g + geom_point(size = 0.1, colour = "red3")
+g <- g + geom_hline(yintercept = 50) + geom_hline(yintercept = 90) 
+g <- g + geom_vline(xintercept = c(data$rank[which.min(abs(data$pct_cumul-50))],
+                                   data$rank[which.min(abs(data$pct_cumul-90))]
+                                   ), linetype = "dashed")
+g <- g + scale_x_continuous(breaks = c(data$rank[which.min(abs(data$pct_cumul-50))], 
+                                     data$rank[which.min(abs(data$pct_cumul-90))], 
+                                     which.min(abs(data$pct_cumul-95))
+                                     ))
+g <- g + scale_y_continuous(breaks = c(0, 25, 50, 75, 90, 100))
+g <- g + ylab("Cumulative %") + xlab("Features")
+g <- g + ggtitle("Number of Features vs. Cumulative Frequency")
+g <- g + theme_few()
+print(g)
+```
+
+The plot shows that a small fraction of unique words accounts for the majority of text:
+
+(1) `r which.min(abs(data$pct_cumul-50))` features, or `r round(which.min(abs(data$pct_cumul-50)) / length(features(dfm)) * 100, 2)`% of total, account for 50% of all text.
+(2) `r which.min(abs(data$pct_cumul-90))` features, or `r round(which.min(abs(data$pct_cumul-90)) / length(features(dfm)) * 100, 2)`% of total, account for 90% of all text.
+
+It turns out the top twenty unigrams by frequency, which we plotted with `multiplot` above, account for almost `r ceiling(data$pct_cumul[data$rank == 20])`% of text.
+
+```{r}
+kable(data[1:20, c(2, 3, 1, 4, 5)],
+      col.names = c("N-gram", "Rank", "Frequency", "% of Total", "Cumulative %"))
+```
+
+Notably, almost all of them all stopwords.
+
+## Observations and Next Steps
+
+In order to keep the Shiny app's runtime reasonably fast, and the amount of RAM required to run the model in R reasonably low, we will have to make trade-offs:
+
+(1) Based on the exploratory analysis, the amount of processing power required grows almost exponentially as more unique words are included in the model. Limiting the data set - say, to the top `r which.min(abs(data$pct_cumul-99))` features, accounting for 99% of text - will be considered. Another option is to limit the features by frequency - e.g. if we limit the features to those occurring 5 or more times, we are left with `r length(data$ngram[data$freq > 4])` features or `r round(length(data$ngram[data$freq > 4]) / length(data$ngram) * 100, 2)`% of total.
+
+(2) We will look at how stemming affects accuracy and processing time.
+
+(3) The sample size will have to be kept small. 
+
+The predictive text model will be based on two ideas:
+
+(1) The probability of the next word is solely determined by the probability of the previous n words (this is the so-called Markov property applied to predictive text modelling). 
+
+(2) Not all n-word combinations will be in the data set; so, we will apply a Katz's Backoff Model, whereby if a matching n-gram is not available, the model will "back off" to the next lowest (n-1)-gram. This will happen through a set of n tables, containing the corresponding list of n-grams and their frequencies.
+
+Remaining action items include determining the maximum n, as in n-grams, determining the optimal sample size, building the predictive model, determining a way to benchmark its accuracy, and creating the Shiny app.
+
+<br>
+<br>
+<br>
